@@ -1,0 +1,20 @@
+# Web UI & Backend API
+streamlit>=1.41.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+python-multipart>=0.0.18
+
+# AI & OCR / Document Processing
+google-genai>=1.0.0
+PyMuPDF>=1.25.0
+Pillow>=11.0.0
+pytesseract>=0.3.13
+
+# Data Validation, Processing & Excel Export
+pydantic>=2.10.0
+pandas>=2.2.0
+openpyxl>=3.1.5
+python-dotenv>=1.0.1
+
+# Testing
+pytest>=8.3.0

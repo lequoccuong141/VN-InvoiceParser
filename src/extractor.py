@@ -9,18 +9,21 @@ Hỗ trợ:
 
 from __future__ import annotations
 
+import csv
 import io
 import json
 import logging
 import re
 import time
+import unicodedata
 import uuid
 import xml.etree.ElementTree as ET
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import fitz  # PyMuPDF
+from openpyxl import load_workbook
 from PIL import Image, ImageOps
 
 from src.config import Settings, get_settings
@@ -28,7 +31,7 @@ from src.schemas import InvoiceData, InvoiceItem, InvoiceRecord, InvoiceStatus
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".xml"}
+SUPPORTED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".xml", ".xlsx", ".xlsm", ".csv"}
 
 EXTRACTION_SYSTEM_PROMPT = """Bạn là chuyên gia kế toán và xử lý tài liệu thông minh (IDP) chuyên về hóa đơn điện tử Việt Nam (Nghị định 123/2020/NĐ-CP, Thông tư 78/2021/TT-BTC).
 
@@ -462,6 +465,267 @@ def parse_text_with_regex_fallback(text: str) -> InvoiceData:
 
 
 # ---------------------------------------------------------------------------
+# Excel (.xlsx / .xlsm) & CSV Parser (Kiểu 1: Bảng kê nhiều HĐ | Kiểu 2: HĐ đơn lẻ)
+# ---------------------------------------------------------------------------
+
+def _strip_accents(text: str) -> str:
+    """Bỏ dấu tiếng Việt và chuẩn hóa chữ thường để so khớp tên cột linh hoạt."""
+    if not text:
+        return ""
+    s = str(text).replace("đ", "d").replace("Đ", "D")
+    s = unicodedata.normalize("NFD", s)
+    s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
+    return re.sub(r"\s+", " ", s.lower()).strip()
+
+
+# Bản đồ từ khóa nhận diện cột bảng kê hóa đơn (hỗ trợ Tổng cục Thuế, MISA, FAST & VN-InvoiceParser)
+_TABLE_COLUMN_ALIASES: Dict[str, List[str]] = {
+    "invoice_symbol": ["ky hieu", "invoice_symbol", "kh hd", "khhdon", "serial"],
+    "invoice_number": ["so hoa don", "so hd", "invoice_number", "shdon", "invoice no"],
+    "invoice_date": ["ngay lap", "ngay hoa don", "ngay hd", "invoice_date", "nlap", "date"],
+    "seller_name": [
+        "ten don vi ban",
+        "ten nguoi ban",
+        "don vi ban",
+        "nguoi ban",
+        "seller_name",
+        "nha cung cap",
+    ],
+    "seller_tax_code": [
+        "mst nguoi ban",
+        "mst ben ban",
+        "mst ban",
+        "ma so thue nguoi ban",
+        "seller_tax_code",
+    ],
+    "buyer_name": [
+        "ten don vi mua",
+        "ten nguoi mua",
+        "don vi mua",
+        "nguoi mua",
+        "buyer_name",
+        "khach hang",
+    ],
+    "buyer_tax_code": [
+        "mst nguoi mua",
+        "mst ben mua",
+        "mst mua",
+        "ma so thue nguoi mua",
+        "buyer_tax_code",
+    ],
+    "sub_total": [
+        "tien hang chua thue",
+        "cong tien hang",
+        "doanh so chua thue",
+        "gia tri chua thue",
+        "tong tien chua thue",
+        "sub_total",
+    ],
+    "vat_rate": ["thue suat", "vat_rate", "tsuat"],
+    "vat_amount": [
+        "tien thue gtgt",
+        "tien thue",
+        "thue gtgt",
+        "tong tien thue",
+        "vat_amount",
+    ],
+    "total_amount": [
+        "tong tien thanh toan",
+        "tong cong tien thanh toan",
+        "tong thanh toan",
+        "tong cong",
+        "total_amount",
+    ],
+}
+
+_ITEM_COLUMN_ALIASES: Dict[str, List[str]] = {
+    "invoice_symbol": ["ky hieu", "invoice_symbol"],
+    "invoice_number": ["so hoa don", "so hd", "invoice_number"],
+    "name": ["ten hang", "hang hoa", "dich vu", "name", "product"],
+    "unit": ["dvt", "don vi tinh", "unit"],
+    "quantity": ["so luong", "sl", "quantity", "qty"],
+    "unit_price": ["don gia", "unit_price", "price"],
+    "amount": ["thanh tien", "amount"],
+}
+
+
+def _match_header_row(
+    rows: List[List[object]],
+    aliases: Dict[str, List[str]],
+    min_matches: int = 3,
+    max_scan_rows: int = 15,
+) -> Tuple[Optional[int], Dict[str, int]]:
+    """Tìm dòng tiêu đề khớp nhiều cột hóa đơn nhất trong `max_scan_rows` dòng đầu."""
+    best_row_idx: Optional[int] = None
+    best_mapping: Dict[str, int] = {}
+
+    for r_idx, row in enumerate(rows[:max_scan_rows]):
+        mapping: Dict[str, int] = {}
+        for c_idx, cell_val in enumerate(row):
+            norm = _strip_accents(str(cell_val or ""))
+            if not norm:
+                continue
+            for field, keywords in aliases.items():
+                if field in mapping:
+                    continue
+                if any(kw == norm or kw in norm for kw in keywords):
+                    mapping[field] = c_idx
+                    break
+        if len(mapping) > len(best_mapping):
+            best_mapping = mapping
+            best_row_idx = r_idx
+
+    if len(best_mapping) >= min_matches:
+        return best_row_idx, best_mapping
+    return None, {}
+
+
+def _cell_to_str(val: object) -> str:
+    """Chuyển giá trị ô Excel (kể cả datetime/date/int) về chuỗi sạch."""
+    if val is None:
+        return ""
+    if isinstance(val, (datetime, date)):
+        return val.strftime("%d/%m/%Y")
+    if isinstance(val, float) and val.is_integer():
+        return str(int(val))
+    return str(val).strip()
+
+
+def _is_summary_or_empty_row(row: List[object]) -> bool:
+    """Kiểm tra dòng trống hoặc dòng TỔNG CỘNG cuối bảng kê."""
+    non_empty = [str(v).strip() for v in row if v is not None and str(v).strip() != ""]
+    if not non_empty:
+        return True
+    first_norm = _strip_accents(non_empty[0])
+    if first_norm in {"tong cong", "tong", "total", "grand total", "cong"}:
+        return True
+    if first_norm.startswith("tong cong"):
+        return True
+    return False
+
+
+def _extract_items_from_second_sheet(wb) -> Dict[Tuple[str, str], List[InvoiceItem]]:
+    """Đọc sheet 'Chi tiết hàng hóa' (nếu có) để gắn lại vào các hóa đơn tương ứng."""
+    items_map: Dict[Tuple[str, str], List[InvoiceItem]] = {}
+    if len(wb.sheetnames) < 2:
+        return items_map
+
+    for sheet_name in wb.sheetnames[1:]:
+        ws = wb[sheet_name]
+        rows = [list(r) for r in ws.iter_rows(values_only=True)]
+        header_idx, col_map = _match_header_row(rows, _ITEM_COLUMN_ALIASES, min_matches=4)
+        if header_idx is None or "name" not in col_map:
+            continue
+
+        for row in rows[header_idx + 1 :]:
+            if _is_summary_or_empty_row(row):
+                continue
+            sym = _cell_to_str(row[col_map["invoice_symbol"]]).upper() if "invoice_symbol" in col_map else ""
+            num = _cell_to_str(row[col_map["invoice_number"]]) if "invoice_number" in col_map else ""
+            item_name = _cell_to_str(row[col_map["name"]])
+            if not item_name:
+                continue
+            item = InvoiceItem(
+                name=item_name,
+                unit=_cell_to_str(row[col_map["unit"]]) if "unit" in col_map else "",
+                quantity=parse_vn_number(row[col_map["quantity"]]) if "quantity" in col_map else 0.0,
+                unit_price=parse_vn_number(row[col_map["unit_price"]]) if "unit_price" in col_map else 0.0,
+                amount=parse_vn_number(row[col_map["amount"]]) if "amount" in col_map else 0.0,
+            )
+            key = (re.sub(r"\s+", "", sym), num.lstrip("0") or num)
+            items_map.setdefault(key, []).append(item)
+        break
+    return items_map
+
+
+def _rows_to_plain_text(rows: List[List[object]]) -> str:
+    """Chuyển toàn bộ các ô không trống của sheet thành văn bản có cấu trúc cho AI/Regex."""
+    lines: List[str] = []
+    for row in rows:
+        parts = [_cell_to_str(v) for v in row if v is not None and _cell_to_str(v)]
+        if not parts:
+            continue
+        # Nối mượt cặp "Nhãn:" + "Giá trị" bằng dấu cách, các cột khác cách nhau bằng " | "
+        merged: List[str] = []
+        i = 0
+        while i < len(parts):
+            if parts[i].endswith(":") and i + 1 < len(parts):
+                merged.append(f"{parts[i]} {parts[i + 1]}")
+                i += 2
+            else:
+                merged.append(parts[i])
+                i += 1
+        lines.append(" | ".join(merged))
+    return "\n".join(lines)
+
+
+def _parse_tabular_rows(
+    rows: List[List[object]],
+    header_idx: int,
+    col_map: Dict[str, int],
+    filename: str,
+    method: str,
+    items_map: Optional[Dict[Tuple[str, str], List[InvoiceItem]]] = None,
+) -> List[InvoiceRecord]:
+    """Chuyển từng dòng trong bảng kê Excel/CSV thành danh sách InvoiceRecord."""
+    records: List[InvoiceRecord] = []
+    items_map = items_map or {}
+
+    def _get(row: List[object], field: str) -> object:
+        idx = col_map.get(field)
+        if idx is None or idx >= len(row):
+            return None
+        return row[idx]
+
+    for offset, row in enumerate(rows[header_idx + 1 :], start=header_idx + 2):
+        if _is_summary_or_empty_row(row):
+            continue
+
+        symbol = _cell_to_str(_get(row, "invoice_symbol"))
+        number = _cell_to_str(_get(row, "invoice_number"))
+        date_str = _cell_to_str(_get(row, "invoice_date"))
+        seller_name = _cell_to_str(_get(row, "seller_name"))
+        seller_mst = _cell_to_str(_get(row, "seller_tax_code"))
+        buyer_name = _cell_to_str(_get(row, "buyer_name"))
+        buyer_mst = _cell_to_str(_get(row, "buyer_tax_code"))
+        sub_total = parse_vn_number(_get(row, "sub_total"))
+        vat_rate = _cell_to_str(_get(row, "vat_rate"))
+        vat_amount = parse_vn_number(_get(row, "vat_amount"))
+        total_amount = parse_vn_number(_get(row, "total_amount"))
+
+        # Bỏ qua dòng rác không có cả số HĐ lẫn số tiền
+        if not (symbol or number or seller_mst or total_amount > 0 or sub_total > 0):
+            continue
+
+        key = (re.sub(r"\s+", "", symbol.upper()), number.lstrip("0") or number)
+        data = normalize_invoice_data(
+            InvoiceData(
+                invoice_symbol=symbol,
+                invoice_number=number,
+                invoice_date=date_str,
+                seller_name=seller_name,
+                seller_tax_code=seller_mst,
+                buyer_name=buyer_name,
+                buyer_tax_code=buyer_mst,
+                sub_total=sub_total,
+                vat_rate=vat_rate,
+                vat_amount=vat_amount,
+                total_amount=total_amount,
+                items=items_map.get(key, []),
+            )
+        )
+        records.append(
+            InvoiceRecord(
+                record_id=uuid.uuid4().hex[:10],
+                source_file=f"{filename} [Dòng {offset}]",
+                extraction_method=method,
+                data=data,
+            )
+        )
+    return records
+
+
+# ---------------------------------------------------------------------------
 # Main Extractor Class (Gemini 2.5 Flash Structured Outputs)
 # ---------------------------------------------------------------------------
 
@@ -532,6 +796,69 @@ class InvoiceExtractor:
 
         raise RuntimeError(f"Gọi Gemini API thất bại sau {max_retries} lần thử: {last_err}")
 
+    def extract_batch_from_bytes(self, file_bytes: bytes, filename: str) -> List[InvoiceRecord]:
+        """Trích xuất 1 hoặc nhiều hóa đơn từ 1 file (hỗ trợ cả bảng kê Excel/CSV nhiều dòng)."""
+        ext = Path(filename).suffix.lower()
+
+        if ext in {".xlsx", ".xlsm", ".csv"}:
+            try:
+                if ext == ".csv":
+                    text_decoded = file_bytes.decode("utf-8-sig", errors="replace")
+                    reader = csv.reader(io.StringIO(text_decoded))
+                    rows: List[List[object]] = [list(r) for r in reader]
+                    items_map: Dict[Tuple[str, str], List[InvoiceItem]] = {}
+                else:
+                    wb = load_workbook(io.BytesIO(file_bytes), data_only=True)
+                    ws = wb.active
+                    rows = [list(r) for r in ws.iter_rows(values_only=True)]
+                    items_map = _extract_items_from_second_sheet(wb)
+
+                # Kiểu 1: Tự động nhận diện Bảng kê nhiều hóa đơn
+                header_idx, col_map = _match_header_row(rows, _TABLE_COLUMN_ALIASES, min_matches=3)
+                if header_idx is not None:
+                    method = "csv_table" if ext == ".csv" else "excel_table"
+                    table_records = _parse_tabular_rows(
+                        rows, header_idx, col_map, filename, method=method, items_map=items_map
+                    )
+                    if table_records:
+                        return table_records
+
+                # Kiểu 2: File Excel/CSV biểu mẫu 1 hóa đơn đơn lẻ
+                plain_text = _rows_to_plain_text(rows)
+                if self._client is not None:
+                    prompt = (
+                        "Trích xuất thông tin hóa đơn điện tử Việt Nam từ nội dung bảng tính Excel sau:\n\n"
+                        f"{plain_text}"
+                    )
+                    data = self._call_gemini_structured([prompt])
+                    method = "excel_single_gemini"
+                else:
+                    data = parse_text_with_regex_fallback(plain_text)
+                    method = "excel_single_regex_fallback"
+
+                return [
+                    InvoiceRecord(
+                        record_id=uuid.uuid4().hex[:10],
+                        source_file=filename,
+                        extraction_method=method,
+                        data=data,
+                    )
+                ]
+            except Exception as exc:
+                logger.exception("Lỗi đọc file bảng tính %s", filename)
+                return [
+                    InvoiceRecord(
+                        record_id=uuid.uuid4().hex[:10],
+                        source_file=filename,
+                        extraction_method="failed",
+                        status=InvoiceStatus.ERROR,
+                        raw_error=str(exc),
+                        validation_errors=[f"Lỗi đọc file Excel/CSV: {exc}"],
+                    )
+                ]
+
+        return [self.extract_bytes(file_bytes, filename)]
+
     def extract_bytes(self, file_bytes: bytes, filename: str) -> InvoiceRecord:
         """Trích xuất một hóa đơn từ dữ liệu bytes và tên file."""
         record_id = uuid.uuid4().hex[:10]
@@ -543,9 +870,15 @@ class InvoiceExtractor:
                 source_file=filename,
                 extraction_method="unsupported",
                 status=InvoiceStatus.ERROR,
-                raw_error=f"Định dạng file không được hỗ trợ: '{ext}'. Chỉ hỗ trợ PDF, PNG, JPG, JPEG, XML.",
+                raw_error=(
+                    f"Định dạng file không được hỗ trợ: '{ext}'. "
+                    "Chỉ hỗ trợ PDF, PNG, JPG, JPEG, XML, XLSX, CSV."
+                ),
                 validation_errors=[f"Định dạng không hỗ trợ ({ext})"],
             )
+
+        if ext in {".xlsx", ".xlsm", ".csv"}:
+            return self.extract_batch_from_bytes(file_bytes, filename)[0]
 
         try:
             # 1. XML hóa đơn điện tử -> parse trực tiếp, chính xác 100%, không cần API

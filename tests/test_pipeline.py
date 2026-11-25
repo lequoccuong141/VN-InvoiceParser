@@ -165,3 +165,88 @@ def test_excel_export_two_sheets_and_formulas():
     # Row 4 là dòng hàng đầu tiên, Row 5 là TỔNG CỘNG
     assert ws_items["A5"].value == "TỔNG CỘNG"
     assert ws_items["K5"].value == "=SUM(K4:K4)"
+
+
+def test_excel_type1_multi_invoice_table_and_roundtrip():
+    """Kiểm tra đọc ngược file Excel 2 sheet (Bảng kê nhiều hóa đơn + Chi tiết hàng hóa)."""
+    rec1 = InvoiceRecord(
+        record_id="r1",
+        source_file="hd1.xml",
+        data=InvoiceData(
+            invoice_symbol="1C26TAA",
+            invoice_number="00000001",
+            invoice_date="20/03/2026",
+            seller_name="Công ty A",
+            seller_tax_code="0101234567",
+            buyer_name="Công ty B",
+            buyer_tax_code="0301234567",
+            sub_total=2_000_000,
+            vat_rate="10%",
+            vat_amount=200_000,
+            total_amount=2_200_000,
+            items=[
+                InvoiceItem(name="Dịch vụ A", unit="Gói", quantity=1, unit_price=2_000_000, amount=2_000_000)
+            ],
+        ),
+    )
+    rec2 = InvoiceRecord(
+        record_id="r2",
+        source_file="hd2.xml",
+        data=InvoiceData(
+            invoice_symbol="1C26TBB",
+            invoice_number="00000002",
+            invoice_date="21/03/2026",
+            seller_name="Công ty C",
+            seller_tax_code="0107654321",
+            buyer_name="Công ty B",
+            buyer_tax_code="0301234567",
+            sub_total=1_000_000,
+            vat_rate="8%",
+            vat_amount=80_000,
+            total_amount=1_050_000,  # Lệch 30.000đ
+        ),
+    )
+    excel_bytes = export_to_excel_bytes(validate_batch([rec1, rec2]))
+
+    extractor = InvoiceExtractor(api_key="", use_fallback_only=True)
+    reimported = validate_batch(extractor.extract_batch_from_bytes(excel_bytes, "bang_ke.xlsx"))
+
+    assert len(reimported) == 2
+    assert reimported[0].extraction_method == "excel_table"
+    assert reimported[0].status == InvoiceStatus.VALID
+    assert len(reimported[0].data.items) == 1
+    assert reimported[0].data.items[0].name == "Dịch vụ A"
+    assert reimported[1].status == InvoiceStatus.NEEDS_REVIEW
+    assert any("Lệch tiền thanh toán" in e for e in reimported[1].validation_errors)
+
+
+def test_excel_type2_single_invoice_template():
+    """Kiểm tra đọc file Excel biểu mẫu 1 hóa đơn đơn lẻ (Kiểu 2)."""
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["HÓA ĐƠN GIÁ TRỊ GIA TĂNG"])
+    ws.append(["Ký hiệu:", "1C26TEX"])
+    ws.append(["Số hóa đơn:", "00009999"])
+    ws.append(["Ngày lập:", "26/03/2026"])
+    ws.append(["Đơn vị bán hàng:", "CÔNG TY TNHH PHẦN MỀM Á CHÂU"])
+    ws.append(["Mã số thuế:", "0105556667"])
+    ws.append(["Cộng tiền hàng:", 10000000])
+    ws.append(["Thuế suất GTGT:", "10%"])
+    ws.append(["Tiền thuế GTGT:", 1000000])
+    ws.append(["Tổng cộng tiền thanh toán:", 11000000])
+
+    buf = io.BytesIO()
+    wb.save(buf)
+
+    extractor = InvoiceExtractor(api_key="", use_fallback_only=True)
+    records = validate_batch(extractor.extract_batch_from_bytes(buf.getvalue(), "hd_don_le.xlsx"))
+
+    assert len(records) == 1
+    assert records[0].extraction_method == "excel_single_regex_fallback"
+    assert records[0].data.invoice_symbol == "1C26TEX"
+    assert records[0].data.invoice_number == "00009999"
+    assert records[0].data.seller_tax_code == "0105556667"
+    assert records[0].data.total_amount == 11_000_000.0
+    assert records[0].status == InvoiceStatus.VALID

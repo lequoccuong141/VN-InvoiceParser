@@ -275,14 +275,14 @@ def main() -> None:
     # Header chính
     st.title("🧾 VN-InvoiceParser")
     st.markdown(
-        "Hệ thống trích xuất dữ liệu hóa đơn điện tử Việt Nam hàng loạt (**PDF, JPG, PNG, XML**), "
+        "Hệ thống trích xuất dữ liệu hóa đơn điện tử Việt Nam hàng loạt (**PDF, JPG, PNG, XML, Excel/CSV**), "
         "tự động đối chiếu lỗi toán học, MST, trùng lặp và xuất sổ sách Excel kế toán."
     )
 
     # Khu vực tải file
     uploaded_files = st.file_uploader(
-        "Kéo thả nhiều hóa đơn vào đây (PDF, PNG, JPG, JPEG, XML)",
-        type=["pdf", "png", "jpg", "jpeg", "xml"],
+        "Kéo thả nhiều hóa đơn vào đây (PDF, PNG, JPG, JPEG, XML, XLSX, CSV)",
+        type=["pdf", "png", "jpg", "jpeg", "xml", "xlsx", "xlsm", "csv"],
         accept_multiple_files=True,
     )
 
@@ -296,8 +296,11 @@ def main() -> None:
         )
     with col_info:
         if uploaded_files and not api_key and not use_fallback_only:
-            has_non_xml = any(not f.name.lower().endswith(".xml") for f in uploaded_files)
-            if has_non_xml:
+            has_ai_files = any(
+                not f.name.lower().endswith((".xml", ".xlsx", ".xlsm", ".csv"))
+                for f in uploaded_files
+            )
+            if has_ai_files:
                 st.warning(
                     "Bạn chưa nhập `GEMINI_API_KEY`. Các file PDF/Ảnh sẽ tự động chạy ở chế độ "
                     "fallback (Regex/Tesseract). Hãy nhập API Key ở thanh bên để đạt độ chính xác cao nhất."
@@ -320,8 +323,8 @@ def main() -> None:
                 text=f"Đang xử lý ({idx}/{total_files}): {file_obj.name} ...",
             )
             file_bytes = file_obj.getvalue()
-            rec = extractor.extract_bytes(file_bytes, file_obj.name)
-            extracted_records.append(rec)
+            recs = extractor.extract_batch_from_bytes(file_bytes, file_obj.name)
+            extracted_records.extend(recs)
 
         progress_bar.progress(100, text="Đang đối chiếu toán học, MST và kiểm tra trùng lặp...")
         validated_records = validate_batch(extracted_records, amount_tolerance=amount_tolerance)

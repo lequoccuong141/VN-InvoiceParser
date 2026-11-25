@@ -62,7 +62,7 @@ async def extract_invoices(
     for upload in files:
         file_bytes = await upload.read()
         filename = upload.filename or "unnamed_file"
-        records.append(extractor.extract_bytes(file_bytes, filename))
+        records.extend(extractor.extract_batch_from_bytes(file_bytes, filename))
 
     return validate_batch(records, amount_tolerance=amount_tolerance)
 

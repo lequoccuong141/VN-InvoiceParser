@@ -1,13 +1,27 @@
 # 🧾 VN-InvoiceParser
 
+[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://vn-invoice-parser.streamlit.app)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 [![Python Version](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![Security Policy](https://img.shields.io/badge/Security-Policy-brightgreen.svg)](./SECURITY.md)
 [![Last Commit](https://img.shields.io/github/last-commit/lequoccuong141/VN-InvoiceParser)](https://github.com/lequoccuong141/VN-InvoiceParser)
 
+> 🌐 **Dùng ngay trên trình duyệt (không cần cài đặt Python/VS Code):** [**https://vn-invoice-parser.streamlit.app**](https://vn-invoice-parser.streamlit.app)
+
 Ứng dụng web mã nguồn mở xử lý tài liệu thông minh (**IDP - Intelligent Document Processing**) chuyên biệt cho **hóa đơn điện tử Việt Nam** (theo Nghị định 123/2020/NĐ-CP & Thông tư 78/2021/TT-BTC).
 
-Cho phép tải lên hàng loạt hóa đơn (**PDF, JPG, PNG, XML**), tự động trích xuất dữ liệu chuẩn hóa JSON bằng **Google Gemini 2.5 Flash (Structured Outputs)** hoặc **XML Parser gốc**, tự động đối chiếu sai số tiền / MST / trùng lặp, cho phép chỉnh sửa trực tiếp trên giao diện và xuất file **Excel kế toán 2 sheet** có công thức tính tổng.
+Cho phép tải lên hàng loạt hóa đơn (**PDF, JPG, PNG, XML, Excel `.xlsx`/`.xlsm`, CSV**), tự động trích xuất dữ liệu chuẩn hóa JSON bằng **Google Gemini 2.5 Flash (Structured Outputs)** hoặc **XML/Excel Parser gốc**, tự động đối chiếu sai số tiền / MST / trùng lặp, cho phép chỉnh sửa trực tiếp trên giao diện và xuất file **Excel kế toán 2 sheet** có công thức tính tổng.
+
+---
+
+## 🌐 Sử dụng trực tuyến (Dành cho người dùng không chuyên IT)
+
+Bạn không cần cài đặt phần mềm hay lập trình — chỉ cần mở trình duyệt (Chrome, Edge, Safari) và thực hiện 4 bước:
+
+1. Truy cập ứng dụng web tại: **[https://vn-invoice-parser.streamlit.app](https://vn-invoice-parser.streamlit.app)**
+2. *(Tùy chọn)* Nhập `GEMINI_API_KEY` ở thanh bên trái nếu muốn AI đọc **PDF scan / ảnh chụp**. Riêng file **XML** và **Bảng kê Excel/CSV** chạy được ngay mà **không cần API Key**.
+3. Kéo thả hàng loạt file hóa đơn (`PDF`, `JPG`, `PNG`, `XML`, `XLSX`, `CSV`) vào khung tải lên → nhấn **🚀 Bắt đầu trích xuất & Đối chiếu**.
+4. Kiểm tra các dòng cảnh báo màu đỏ (`Cần kiểm tra`), sửa trực tiếp trên bảng nếu cần, rồi vào tab **📥 Xuất Excel & JSON** để tải file sổ sách kế toán `.xlsx`.
 
 ---
 
@@ -15,6 +29,7 @@ Cho phép tải lên hàng loạt hóa đơn (**PDF, JPG, PNG, XML**), tự đ�
 
 1. **Tiền xử lý & Tự động phân loại thông minh (Ingestion):**
    - **XML (NĐ123 / TT78):** Parse trực tiếp bằng XML parser chuẩn Tổng cục Thuế — chính xác 100%, không tốn chi phí API.
+   - **Excel (`.xlsx`/`.xlsm`) & CSV:** Tự động nhận diện **Bảng kê nhiều hóa đơn** (Tổng cục Thuế, MISA, FAST...) hoặc **Biểu mẫu 1 hóa đơn đơn lẻ** để đối chiếu sai tiền thuế, MST và trùng lặp.
    - **PDF có sẵn lớp text:** Tự động phát hiện bằng `PyMuPDF (fitz)` và trích xuất trực tiếp text gốc để đưa qua Gemini Structured Outputs (hoặc Regex fallback).
    - **PDF scan & Ảnh (JPG/PNG):** Chuyển đổi sang ảnh PNG độ phân giải cao (250 DPI), tự động căn chỉnh chiều EXIF và trích xuất bằng **Gemini 2.5 Flash Vision** (hoặc Tesseract OCR fallback).
 2. **Trích xuất chuẩn hóa JSON Schema:**

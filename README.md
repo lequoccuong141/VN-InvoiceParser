@@ -121,3 +121,16 @@ Truy cập tài liệu Swagger UI tương tác tại: `http://localhost:8000/doc
 ```bash
 pytest -v
 ```
+
+### 7. Deploy miễn phí lên Streamlit Community Cloud
+
+Dự án đã cấu hình sẵn `.streamlit/config.toml`, `packages.txt` (cài sẵn Tesseract tiếng Việt trên Cloud) và hỗ trợ đọc `st.secrets["GEMINI_API_KEY"]`:
+
+1. Đẩy mã nguồn lên GitHub (`git push origin main`).
+2. Truy cập [share.streamlit.io](https://share.streamlit.io) → đăng nhập bằng GitHub → chọn **Create app**.
+3. Chọn Repository `lequoccuong141/VN-InvoiceParser`, Branch `main`, Main file path `app.py`.
+4. *(Tùy chọn)* Vào **Advanced settings → Secrets** và dán:
+   ```toml
+   GEMINI_API_KEY = "AIzaSy...your_key_here"
+   ```
+5. Nhấn **Deploy** — sau khoảng 2 phút bạn sẽ có đường link web để bất kỳ ai cũng dùng được ngay mà không cần cài đặt.

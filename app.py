@@ -206,6 +206,16 @@ def _highlight_status_rows(row: pd.Series) -> List[str]:
 # Main Streamlit Application
 # ---------------------------------------------------------------------------
 
+def _get_default_api_key(env_key: str) -> str:
+    """Đọc GEMINI_API_KEY từ Streamlit Secrets (khi chạy trên Cloud) hoặc từ .env."""
+    if env_key:
+        return env_key
+    try:
+        return str(st.secrets.get("GEMINI_API_KEY", ""))
+    except Exception:
+        return ""
+
+
 def main() -> None:
     settings = get_settings()
 
@@ -217,7 +227,7 @@ def main() -> None:
         st.title("⚙️ Cấu hình hệ thống")
         api_key = st.text_input(
             "Gemini API Key",
-            value=settings.gemini_api_key,
+            value=_get_default_api_key(settings.gemini_api_key),
             type="password",
             help="Lấy miễn phí tại Google AI Studio (https://aistudio.google.com/apikey). File XML không cần API Key.",
         )
